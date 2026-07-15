@@ -1,0 +1,6 @@
+@TiltGuard.API_HostAddress = http://localhost:5191
+
+GET {{TiltGuard.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

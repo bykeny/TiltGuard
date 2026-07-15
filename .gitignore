@@ -1,0 +1,10 @@
+# .NET
+bin/
+obj/
+.vs/
+appsettings.Development.json
+
+# Node / Expo
+node_modules/
+.expo/
+dist/

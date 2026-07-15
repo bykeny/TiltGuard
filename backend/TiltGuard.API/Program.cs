@@ -1,0 +1,248 @@
+using System.Diagnostics;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Npgsql;
+using TiltGuard.BackgroundServices;
+using TiltGuard.Contracts;
+using TiltGuard.Domain;
+using TiltGuard.Hubs;
+using TiltGuard.Infrastructure;
+using TiltGuard.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+builder.Services.AddOpenApi();
+
+var dataSourceBuilder = new NpgsqlDataSourceBuilder(
+    builder.Configuration.GetConnectionString("TiltGuard"));
+dataSourceBuilder.MapEnum<PremiumStatus>("premium_status");
+dataSourceBuilder.MapEnum<GameType>("game_type");
+dataSourceBuilder.MapEnum<MatchOutcome>("match_outcome");
+dataSourceBuilder.MapEnum<StrategyType>("strategy_type");
+var dataSource = dataSourceBuilder.Build();
+
+builder.Services.AddDbContextPool<TiltGuardDbContext>(o =>
+    o.UseNpgsql(dataSource, npgsql =>
+     {
+         // When using a pre-built NpgsqlDataSource, Npgsql requires the enum mapping to be
+         // registered a second time here (in addition to the NpgsqlDataSourceBuilder calls
+         // above) - otherwise the EF layer silently falls back to sending enum values as
+         // plain integers at runtime, even though HasPostgresEnum<T>() is declared in
+         // OnModelCreating and the column's real Postgres type is the native enum.
+         npgsql.MapEnum<PremiumStatus>("premium_status");
+         npgsql.MapEnum<GameType>("game_type");
+         npgsql.MapEnum<MatchOutcome>("match_outcome");
+         npgsql.MapEnum<StrategyType>("strategy_type");
+         npgsql.EnableRetryOnFailure(3);
+     })
+     .UseSnakeCaseNamingConvention());
+
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<ITiltCalculationEngine, TiltCalculationEngine>();
+builder.Services.AddScoped<ISessionService, SessionService>();
+builder.Services.AddHostedService<CooldownWatchdog>();
+
+builder.Services.AddSignalR().AddMessagePackProtocol();
+
+var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
+var jwtSecret = jwtSection["Secret"]
+    ?? throw new InvalidOperationException("Jwt:Secret is not configured.");
+var jwtIssuer = jwtSection["Issuer"]
+    ?? throw new InvalidOperationException("Jwt:Issuer is not configured.");
+var jwtAudience = jwtSection["Audience"]
+    ?? throw new InvalidOperationException("Jwt:Audience is not configured.");
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        // Keep short claim names ("sub", not the long ClaimTypes.NameIdentifier URI) on the
+        // resulting ClaimsPrincipal - Context.UserIdentifier (SignalR, §4.3) and any future
+        // [Authorize]-protected handler that reads the "sub" claim depend on this.
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtIssuer,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Convert.FromBase64String(jwtSecret)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+        };
+
+        // SignalR's browser/mobile clients can't set an Authorization header on the WebSocket
+        // handshake, so the JWT travels as an "access_token" query string param instead;
+        // intercept it here and hand it to the bearer handler as if it were the header value.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                if (context.HttpContext.Request.Path.StartsWithSegments("/hubs/tilt"))
+                {
+                    string? accessToken = context.HttpContext.Request.Query["access_token"];
+                    if (!string.IsNullOrEmpty(accessToken))
+                    {
+                        context.Token = accessToken;
+                    }
+                }
+
+                return Task.CompletedTask;
+            },
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+builder.Services.AddRateLimiter(options =>
+{
+    // Policy "auth": 10 requests/minute/IP on /api/v1/auth/* (§1.3 rate limiting table).
+    options.AddFixedWindowLimiter("auth", limiterOptions =>
+    {
+        limiterOptions.PermitLimit = 10;
+        limiterOptions.Window = TimeSpan.FromMinutes(1);
+        limiterOptions.QueueLimit = 0;
+        limiterOptions.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+
+    options.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            BuildErrorEnvelope("RATE_LIMITED", "Too many requests. Please try again later.", context.HttpContext),
+            cancellationToken: ct);
+    };
+});
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseHttpsRedirection();
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapHub<TiltHub>("/hubs/tilt");
+
+var auth = app.MapGroup("/api/v1/auth").RequireRateLimiting("auth");
+
+auth.MapPost("/register", async (RegisterRequest request, IAuthService authService, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await authService.RegisterAsync(request, ct);
+        return Results.Created($"/api/v1/users/{result.UserId}", result);
+    }
+    catch (AuthException ex)
+    {
+        return ToErrorResult(ex, httpContext);
+    }
+});
+
+auth.MapPost("/login", async (LoginRequest request, IAuthService authService, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await authService.LoginAsync(request, ct);
+        return Results.Ok(result);
+    }
+    catch (AuthException ex)
+    {
+        return ToErrorResult(ex, httpContext);
+    }
+});
+
+auth.MapPost("/refresh", async (RefreshRequest request, IAuthService authService, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var header = httpContext.Request.Headers.Authorization.ToString();
+        var expiredAccessToken = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? header["Bearer ".Length..]
+            : null;
+
+        var result = await authService.RefreshAsync(request, expiredAccessToken, ct);
+        return Results.Ok(result);
+    }
+    catch (AuthException ex)
+    {
+        return ToErrorResult(ex, httpContext);
+    }
+});
+
+var api = app.MapGroup("/api/v1").RequireAuthorization();
+
+api.MapPost("/sessions/start", async (StartSessionRequest request, ISessionService sessionService, ClaimsPrincipal user, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sessionService.StartSessionAsync(GetUserId(user), request, ct);
+        return Results.Created($"/api/v1/sessions/{result.SessionId}", result);
+    }
+    catch (SessionException ex)
+    {
+        return ToSessionErrorResult(ex, httpContext);
+    }
+});
+
+api.MapPost("/sessions/end", async (EndSessionRequest request, ISessionService sessionService, ClaimsPrincipal user, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sessionService.EndSessionAsync(GetUserId(user), request, ct);
+        return Results.Ok(result);
+    }
+    catch (SessionException ex)
+    {
+        return ToSessionErrorResult(ex, httpContext);
+    }
+});
+
+api.MapPost("/matches/log", async (LogMatchRequest request, ISessionService sessionService, ClaimsPrincipal user, HttpContext httpContext, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await sessionService.LogMatchAsync(GetUserId(user), request, ct);
+        return Results.Created($"/api/v1/matches/{result.MatchId}", result);
+    }
+    catch (SessionException ex)
+    {
+        return ToSessionErrorResult(ex, httpContext);
+    }
+});
+
+app.Run();
+
+static Guid GetUserId(ClaimsPrincipal user) =>
+    Guid.Parse(user.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
+
+static object BuildErrorEnvelope(string code, string message, HttpContext httpContext, object? details = null) => new
+{
+    error = new
+    {
+        code,
+        message,
+        traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier,
+        details,
+    }
+};
+
+static IResult ToErrorResult(AuthException ex, HttpContext httpContext) =>
+    Results.Json(BuildErrorEnvelope(ex.Code, ex.Message, httpContext, ex.Details), statusCode: ex.StatusCode);
+
+static IResult ToSessionErrorResult(SessionException ex, HttpContext httpContext) =>
+    Results.Json(BuildErrorEnvelope(ex.Code, ex.Message, httpContext, ex.Details), statusCode: ex.StatusCode);
