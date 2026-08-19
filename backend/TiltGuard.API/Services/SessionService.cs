@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using TiltGuard.Contracts;
 using TiltGuard.Domain;
+using TiltGuard.Hubs;
 using TiltGuard.Infrastructure;
 
 namespace TiltGuard.Services;
@@ -11,9 +13,18 @@ public interface ISessionService
     Task<SessionStartResponse> StartSessionAsync(Guid userId, StartSessionRequest request, CancellationToken ct);
     Task<SessionEndResponse> EndSessionAsync(Guid userId, EndSessionRequest request, CancellationToken ct);
     Task<MatchLogResponse> LogMatchAsync(Guid userId, LogMatchRequest request, CancellationToken ct);
+    Task<ActiveSessionDto?> GetActiveSessionAsync(Guid userId, CancellationToken ct);
+
+    // Hub-facing (§4.3): returns null when the session does not exist or is not the caller's,
+    // which is what lets TiltHub.JoinSession reject without leaking which of the two it was.
+    Task<SessionStatePayload?> GetOwnedSessionStateAsync(Guid userId, Guid sessionId, CancellationToken ct);
 }
 
-public sealed class SessionService(TiltGuardDbContext db, ITiltCalculationEngine tiltEngine) : ISessionService
+public sealed class SessionService(
+    TiltGuardDbContext db,
+    ITiltCalculationEngine tiltEngine,
+    IHubContext<TiltHub, ITiltClient> hub,
+    ILogger<SessionService> logger) : ISessionService
 {
     private const int LockedCooldownDurationSeconds = 900; // 15 minutes, fixed for this phase.
 
@@ -164,7 +175,135 @@ public sealed class SessionService(TiltGuardDbContext db, ITiltCalculationEngine
             },
         };
 
+        // §4.4 push path, deliberately after the commit: broadcasting from inside the transaction
+        // would announce a match that a rollback then erased.
+        await PushTiltAlertAsync(session.Id, match.LoggedAt, assessment, cooldown);
+
         return new MatchLogResponse { MatchId = match.Id, LoggedAt = match.LoggedAt, TiltEvaluation = tiltEvaluation };
+    }
+
+    // Fire-and-report: the match is already durable and §3.6 embeds the same evaluation in the
+    // 201 body precisely so the UI renders without waiting on this. A hub fault must therefore
+    // never turn a successful write into a 500 - it degrades to "no live push this time".
+    private async Task PushTiltAlertAsync(
+        Guid sessionId,
+        DateTimeOffset evaluatedAt,
+        TiltAssessment assessment,
+        CooldownProtocol? cooldown)
+    {
+        try
+        {
+            var group = hub.Clients.Group(TiltHub.SessionGroup(sessionId));
+
+            await group.ReceiveTiltAlert(new TiltAlertPayload
+            {
+                TiltCoefficient = assessment.TiltCoefficient,
+                RiskFlag = assessment.RiskFlag.ToApiString(),
+                ConsecutiveLosses = assessment.ConsecutiveLosses,
+                TiltTrajectory = assessment.Trajectory,
+                RecommendedCooldownAction = cooldown is null ? null : new RecommendedCooldownAction
+                {
+                    CooldownId = cooldown.Id,
+                    StrategyType = cooldown.StrategyType.ToApiString(),
+                    DurationSeconds = cooldown.DurationSeconds,
+                    IsMandatory = true,
+                },
+                EvaluatedAtUtc = evaluatedAt,
+            });
+
+            // RequiresCooldown is true only for LockRequired (§5.4); Critical is advisory and
+            // must not lock. The cooldown row is what the client needs to count down against,
+            // so both conditions have to hold before a lock is announced.
+            if (assessment.RequiresCooldown && cooldown is not null)
+            {
+                await group.CooldownLockEngaged(new CooldownLockPayload
+                {
+                    CooldownId = cooldown.Id,
+                    StrategyType = cooldown.StrategyType.ToApiString(),
+                    DurationSeconds = cooldown.DurationSeconds,
+                    // Same expression GetActiveLockAsync and CooldownWatchdog use to decide when
+                    // a lock is over, so the client's timer cannot outlive the server's view.
+                    LockExpiresAtUtc = cooldown.StartedAt.AddSeconds(cooldown.DurationSeconds),
+                    CoachMessage = BuildCoachMessage(assessment.ConsecutiveLosses, cooldown),
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Hub push failed for session {SessionId}; the match was still committed.", sessionId);
+        }
+    }
+
+    private static string BuildCoachMessage(int consecutiveLosses, CooldownProtocol cooldown)
+    {
+        var minutes = Math.Max(1, cooldown.DurationSeconds / 60);
+        var activity = cooldown.StrategyType switch
+        {
+            StrategyType.Breathing => "box breathing",
+            StrategyType.Stretching => "stretching",
+            StrategyType.Hydration => "hydration",
+            _ => "recovery",
+        };
+
+        var streak = consecutiveLosses == 1
+            ? "That loss put you over the line."
+            : $"{consecutiveLosses} losses in a row.";
+
+        return $"{streak} {minutes} minutes of {activity} before queue.";
+    }
+
+    public async Task<ActiveSessionDto?> GetActiveSessionAsync(Guid userId, CancellationToken ct)
+    {
+        // ux_sessions_one_active_per_user (partial unique index) guarantees at most one row here,
+        // so FirstOrDefault is exact rather than "pick any".
+        var session = await db.Sessions.AsNoTracking()
+            .Where(s => s.UserId == userId && s.IsActive)
+            .Select(s => new
+            {
+                s.Id,
+                s.GameType,
+                s.StartTime,
+                MatchesCount = s.Matches.Count,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        return session is null ? null : new ActiveSessionDto
+        {
+            SessionId = session.Id,
+            GameType = session.GameType.ToApiString(),
+            StartTime = session.StartTime,
+            MatchesCount = session.MatchesCount,
+        };
+    }
+
+    public async Task<SessionStatePayload?> GetOwnedSessionStateAsync(Guid userId, Guid sessionId, CancellationToken ct)
+    {
+        // Ownership - not liveness - is the gate. A client re-invoking JoinSession after a
+        // reconnect should be told the session is Idle, not thrown a HubException, if it ended
+        // while the socket was down.
+        var session = await db.Sessions.AsNoTracking()
+            .Where(s => s.Id == sessionId && s.UserId == userId)
+            .Select(s => new
+            {
+                s.Id,
+                s.IsActive,
+                MatchesLogged = s.Matches.Count,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        if (session is null)
+            return null;
+
+        // Reuses the one definition of "active lock" rather than restating the predicate, so the
+        // replayed state can never disagree with what LogMatchAsync enforces.
+        var isLocked = await GetActiveLockAsync(userId, ct) is not null;
+
+        return new SessionStatePayload
+        {
+            SessionId = session.Id,
+            State = isLocked ? "CooldownLocked" : session.IsActive ? "InMatch" : "Idle",
+            MatchesLogged = session.MatchesLogged,
+        };
     }
 
     // "Unexpired cooldown protocol for that user": ReleasedAt is the authoritative signal that

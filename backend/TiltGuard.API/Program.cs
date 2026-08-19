@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
@@ -51,6 +52,10 @@ builder.Services.AddScoped<ISessionService, SessionService>();
 builder.Services.AddHostedService<CooldownWatchdog>();
 
 builder.Services.AddSignalR().AddMessagePackProtocol();
+
+// Must be registered for Context.UserIdentifier to resolve at all - see SubClaimUserIdProvider
+// for why the default NameIdentifier-based provider comes back null in this app (§4.4).
+builder.Services.AddSingleton<IUserIdProvider, SubClaimUserIdProvider>();
 
 var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
 var jwtSecret = jwtSection["Secret"]
@@ -197,6 +202,15 @@ api.MapPost("/sessions/start", async (StartSessionRequest request, ISessionServi
     {
         return ToSessionErrorResult(ex, httpContext);
     }
+});
+
+api.MapGet("/sessions/active", async (ISessionService sessionService, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var result = await sessionService.GetActiveSessionAsync(GetUserId(user), ct);
+
+    // 204, not 404: "you have no session open" is a valid answer to a valid question, not a
+    // missing resource, and it saves the client from parsing an error envelope on the happy path.
+    return result is null ? Results.NoContent() : Results.Ok(result);
 });
 
 api.MapPost("/sessions/end", async (EndSessionRequest request, ISessionService sessionService, ClaimsPrincipal user, HttpContext httpContext, CancellationToken ct) =>

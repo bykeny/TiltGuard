@@ -68,3 +68,14 @@ public sealed record MatchLogResponse
     public required DateTimeOffset LoggedAt { get; init; }
     public required TiltEvaluationResponse TiltEvaluation { get; init; }
 }
+
+// GET /api/v1/sessions/active. Lets a client that hit 409 SESSION_ALREADY_ACTIVE (§3.4) recover
+// the running session's real StartTime instead of anchoring its duration ticker to the moment it
+// resumed.
+public sealed record ActiveSessionDto
+{
+    public required Guid SessionId { get; init; }
+    public required string GameType { get; init; }
+    public required DateTimeOffset StartTime { get; init; }
+    public required int MatchesCount { get; init; }
+}

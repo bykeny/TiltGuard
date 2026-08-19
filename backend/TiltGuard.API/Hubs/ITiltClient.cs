@@ -1,12 +1,17 @@
 namespace TiltGuard.Hubs;
 
-// Simplified 3-method subset of the spec's §4.1 strongly-typed contract (which has 5 methods
-// with dedicated payload records - ReceiveSessionState, ReceiveTelemetryAck, and typed
-// TiltAlertPayload/CooldownLockPayload/CooldownReleasePayload). Loosely-typed here as requested
-// for this phase; expected to be tightened up once the REST-to-hub push path (§4.4) is wired.
+// Strongly-typed client contract (§4.1).
+//
+// ReceiveTelemetryAck is still absent because SendLiveTelemetry (§4.3) has no server-side
+// implementation yet. CooldownLockReleased deliberately keeps its `string` argument rather than
+// §4.2's CooldownReleasePayload: CooldownWatchdog is its only caller and tightening it is a wire
+// change for already-shipped clients, so it is left for the phase that builds
+// ConfirmCooldownCompliance and needs the ComplianceVerified flag to distinguish a user-confirmed
+// release from a watchdog expiry.
 public interface ITiltClient
 {
-    Task ReceiveTiltAlert(object payload);
-    Task CooldownLockEngaged(object payload);
+    Task ReceiveTiltAlert(TiltAlertPayload payload);
+    Task ReceiveSessionState(SessionStatePayload payload);
+    Task CooldownLockEngaged(CooldownLockPayload payload);
     Task CooldownLockReleased(string message);
 }
