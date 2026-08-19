@@ -9,6 +9,14 @@ type JwtClaims = {
   exp?: number;
   sub?: string;
   email?: string;
+  /** §1.3 access-token claims carry the entitlement tier. */
+  premium?: string;
+};
+
+export type Identity = {
+  userId: string | null;
+  email: string | null;
+  premiumStatus: string | null;
 };
 
 /** Clock-skew allowance so a token expiring "now" is treated as already gone. */
@@ -56,4 +64,14 @@ export function isAccessTokenUsable(token: string | null): token is string {
 
   const nowSeconds = Math.floor(Date.now() / 1000);
   return claims.exp > nowSeconds + EXPIRY_SKEW_SECONDS;
+}
+
+/** Projects the access token's claims into the identity the UI renders. */
+export function readIdentity(token: string | null): Identity {
+  const claims = token ? decodeJwtClaims(token) : null;
+  return {
+    userId: claims?.sub ?? null,
+    email: claims?.email ?? null,
+    premiumStatus: claims?.premium ?? null,
+  };
 }

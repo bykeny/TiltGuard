@@ -9,7 +9,9 @@ import 'react-native-reanimated';
 
 import { BootSplash } from '@/components/BootSplash';
 import { useColorScheme } from '@/components/useColorScheme';
+import { tiltHub } from '@/src/realtime/tiltHub';
 import { useAuthStore } from '@/src/stores/authStore';
+import { useSessionStore } from '@/src/stores/sessionStore';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -60,6 +62,16 @@ function RootLayoutNav() {
   const colorScheme = useColorScheme();
   const isLoading = useAuthStore((state) => state.isLoading);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+
+  // Tear down session state whenever auth drops — this covers the explicit
+  // sign-out and the forced one the refresh queue triggers on a rejected
+  // refresh token (§1.3.4), so the next user never inherits a live session.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      useSessionStore.getState().reset();
+      void tiltHub.stop();
+    }
+  }, [isAuthenticated]);
 
   // Hold the navigator back until we know which side of the guard we are on;
   // mounting it early would flash `(auth)` at an already-signed-in user.

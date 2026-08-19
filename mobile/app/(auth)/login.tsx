@@ -5,10 +5,10 @@
  * it to secure storage and flips `isAuthenticated`. The root layout's route
  * guard does the navigating — this screen never calls `router.replace` itself.
  */
+import { Link } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -20,8 +20,17 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ApiError, login as loginRequest } from '@/src/api/auth';
+import {
+  AmbientGlow,
+  BrandMark,
+  ErrorBanner,
+  FieldLabel,
+  PrimaryButton,
+  TextField,
+} from '@/components/ui';
+import { login as loginRequest } from '@/src/api/auth';
 import { API_BASE_URL } from '@/src/api/config';
+import { toErrorMessage } from '@/src/api/errors';
 import { useAuthStore } from '@/src/stores/authStore';
 
 type Field = 'email' | 'password';
@@ -55,32 +64,17 @@ export default function LoginScreen() {
       // Hands off to the store; the route guard swaps the stack for us.
       await authenticate(tokens.accessToken, tokens.refreshToken);
     } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? error.message
-          : 'Something went wrong. Please try again.';
-      setErrorMessage(message);
+      setErrorMessage(toErrorMessage(error));
       setPassword('');
     } finally {
       setIsSubmitting(false);
     }
   }, [authenticate, canSubmit, email, password]);
 
-  const fieldClasses = (field: Field) =>
-    [
-      'rounded-2xl border px-4 py-3.5 text-base text-slate-100',
-      focused === field
-        ? 'border-emerald-400/70 bg-slate-900'
-        : 'border-white/10 bg-slate-900/60',
-    ].join(' ');
-
   return (
     <View className="flex-1 bg-slate-950">
       <StatusBar style="light" />
-
-      {/* Ambient depth: soft emerald discs bleeding off the top edge. */}
-      <View className="absolute -left-16 -top-24 h-72 w-72 rounded-full bg-emerald-500/10" />
-      <View className="absolute -top-10 right-[-70px] h-56 w-56 rounded-full bg-emerald-400/5" />
+      <AmbientGlow />
 
       <KeyboardAvoidingView
         className="flex-1"
@@ -95,17 +89,8 @@ export default function LoginScreen() {
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          {/* Brand */}
-          <View className="flex-row items-center gap-3">
-            <View className="h-10 w-10 items-center justify-center rounded-xl border border-emerald-400/30 bg-emerald-500/10">
-              <View className="h-4 w-4 rounded bg-emerald-400" />
-            </View>
-            <Text className="text-lg font-semibold tracking-tight text-slate-100">
-              TiltGuard
-            </Text>
-          </View>
+          <BrandMark />
 
-          {/* Headline */}
           <View className="mt-12">
             <Text className="text-4xl font-bold leading-tight tracking-tight text-white">
               Welcome back
@@ -116,28 +101,17 @@ export default function LoginScreen() {
             </Text>
           </View>
 
-          {/* Form card */}
           <View className="mt-10 rounded-3xl border border-white/5 bg-slate-900/50 p-5">
-            {errorMessage ? (
-              <View className="mb-5 flex-row items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3">
-                <View className="mt-1.5 h-2 w-2 rounded-full bg-red-400" />
-                <Text className="flex-1 text-sm leading-5 text-red-300">
-                  {errorMessage}
-                </Text>
-              </View>
-            ) : null}
+            <ErrorBanner message={errorMessage} />
 
-            <Text className="mb-2 text-xs font-medium uppercase tracking-widest text-slate-500">
-              Email
-            </Text>
-            <TextInput
-              className={fieldClasses('email')}
+            <FieldLabel>Email</FieldLabel>
+            <TextField
+              isFocused={focused === 'email'}
               value={email}
               onChangeText={setEmail}
               onFocus={() => setFocused('email')}
               onBlur={() => setFocused(null)}
               placeholder="player@example.com"
-              placeholderTextColor="#475569"
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
@@ -148,19 +122,18 @@ export default function LoginScreen() {
               onSubmitEditing={() => passwordRef.current?.focus()}
             />
 
-            <Text className="mb-2 mt-6 text-xs font-medium uppercase tracking-widest text-slate-500">
-              Password
-            </Text>
+            <View className="mt-6" />
+            <FieldLabel>Password</FieldLabel>
             <View className="justify-center">
-              <TextInput
+              <TextField
                 ref={passwordRef}
-                className={`${fieldClasses('password')} pr-20`}
+                isFocused={focused === 'password'}
+                className="pr-20"
                 value={password}
                 onChangeText={setPassword}
                 onFocus={() => setFocused('password')}
                 onBlur={() => setFocused(null)}
                 placeholder="Your password"
-                placeholderTextColor="#475569"
                 secureTextEntry={!revealPassword}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -182,25 +155,23 @@ export default function LoginScreen() {
               </Pressable>
             </View>
 
-            <Pressable
-              className={`mt-8 h-14 flex-row items-center justify-center rounded-2xl ${
-                canSubmit ? 'bg-emerald-500 active:bg-emerald-600' : 'bg-emerald-500/25'
-              }`}
-              disabled={!canSubmit}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !canSubmit, busy: isSubmitting }}
-              onPress={handleSubmit}>
-              {isSubmitting ? (
-                <ActivityIndicator color="#022c22" />
-              ) : (
-                <Text
-                  className={`text-base font-semibold tracking-tight ${
-                    canSubmit ? 'text-emerald-950' : 'text-emerald-100/50'
-                  }`}>
-                  Sign in
-                </Text>
-              )}
-            </Pressable>
+            <View className="mt-8">
+              <PrimaryButton
+                label="Sign in"
+                onPress={handleSubmit}
+                disabled={!canSubmit}
+                busy={isSubmitting}
+              />
+            </View>
+          </View>
+
+          <View className="mt-8 flex-row items-center justify-center gap-1.5">
+            <Text className="text-sm text-slate-500">New to TiltGuard?</Text>
+            <Link href="/register" replace asChild>
+              <Pressable hitSlop={8} accessibilityRole="link">
+                <Text className="text-sm font-semibold text-emerald-400">Create account</Text>
+              </Pressable>
+            </Link>
           </View>
 
           <View className="flex-1" />

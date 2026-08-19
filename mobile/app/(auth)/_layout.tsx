@@ -13,6 +13,7 @@ export default function AuthLayout() {
         animation: 'fade',
       }}>
       <Stack.Screen name="login" />
+      <Stack.Screen name="register" />
     </Stack>
   );
 }
