@@ -38,6 +38,17 @@ public static class ApiEnumMapping
         }
     }
 
+    // Matches the DDL enum labels / REST JSON examples (§3.1: "premiumStatus": "free"), which are
+    // snake_case and distinct from the JWT claim's PascalCase convention (§1.3: "Premium").
+    public static string ToApiString(this PremiumStatus value) => value switch
+    {
+        PremiumStatus.Free => "free",
+        PremiumStatus.Premium => "premium",
+        PremiumStatus.GracePeriod => "grace_period",
+        PremiumStatus.Expired => "expired",
+        _ => throw new ArgumentOutOfRangeException(nameof(value)),
+    };
+
     public static string ToApiString(this MatchOutcome value) => value switch
     {
         MatchOutcome.Win => "win",

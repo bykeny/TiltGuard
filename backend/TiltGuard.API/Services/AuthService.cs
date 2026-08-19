@@ -256,21 +256,10 @@ public sealed class AuthService(TiltGuardDbContext db, IOptions<JwtOptions> jwtO
     {
         UserId = user.Id,
         Email = user.Email,
-        PremiumStatus = ToApiPremiumStatus(user.PremiumStatus),
+        PremiumStatus = user.PremiumStatus.ToApiString(),
         AccessToken = accessToken,
         AccessTokenExpiresAtUtc = accessExpiry,
         RefreshToken = rawRefresh,
         RefreshTokenExpiresAtUtc = refreshExpiry,
-    };
-
-    // Matches the DDL enum labels / REST JSON examples (§3.1: "premiumStatus": "free"), which
-    // are snake_case and distinct from the JWT claim's PascalCase convention (§1.3: "Premium").
-    private static string ToApiPremiumStatus(PremiumStatus status) => status switch
-    {
-        PremiumStatus.Free => "free",
-        PremiumStatus.Premium => "premium",
-        PremiumStatus.GracePeriod => "grace_period",
-        PremiumStatus.Expired => "expired",
-        _ => throw new ArgumentOutOfRangeException(nameof(status)),
     };
 }

@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using TiltGuard.BackgroundServices;
@@ -46,7 +49,9 @@ builder.Services.AddDbContextPool<TiltGuardDbContext>(o =>
      .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.Configure<RevenueCatOptions>(builder.Configuration.GetSection(RevenueCatOptions.SectionName));
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IEntitlementService, EntitlementService>();
 builder.Services.AddScoped<ITiltCalculationEngine, TiltCalculationEngine>();
 builder.Services.AddScoped<ISessionService, SessionService>();
 builder.Services.AddHostedService<CooldownWatchdog>();
@@ -238,6 +243,69 @@ api.MapPost("/matches/log", async (LogMatchRequest request, ISessionService sess
         return ToSessionErrorResult(ex, httpContext);
     }
 });
+
+api.MapGet("/me/entitlements", async (IEntitlementService entitlements, ClaimsPrincipal user, HttpContext httpContext, CancellationToken ct) =>
+{
+    // Read from the database, not from the JWT's "premium" claim: the claim is a snapshot taken
+    // at login and an access token lives 15 minutes, so a webhook that just upgraded (or expired)
+    // an account would not be reflected until the next refresh. §6.1 makes the server's stored
+    // status the source of truth for gating.
+    var result = await entitlements.GetEntitlementsAsync(GetUserId(user), ct);
+
+    return result is null
+        ? Results.Json(BuildErrorEnvelope("NOT_FOUND", "User not found.", httpContext), statusCode: StatusCodes.Status404NotFound)
+        : Results.Ok(result);
+});
+
+// Anonymous, secret-gated (§6.2). Deliberately outside the "auth" rate-limit policy: throttling
+// RevenueCat's delivery retries by IP would drop legitimate billing events on the floor.
+app.MapPost("/api/v1/webhooks/revenuecat", async (
+    RevenueCatEvent envelope,
+    IEntitlementService entitlements,
+    IOptions<RevenueCatOptions> revenueCatOptions,
+    HttpContext httpContext,
+    ILoggerFactory loggerFactory,
+    CancellationToken ct) =>
+{
+    var logger = loggerFactory.CreateLogger("RevenueCatWebhook");
+    var configured = revenueCatOptions.Value.WebhookAuthHeader;
+
+    // Fail closed. With no secret configured, `expected` would be empty and the constant-time
+    // compare below would match an absent Authorization header - i.e. a misconfigured deployment
+    // would silently expose entitlement writes to the internet.
+    if (string.IsNullOrEmpty(configured))
+    {
+        logger.LogError("RevenueCat:WebhookAuthHeader is not configured; rejecting webhook delivery.");
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+
+    var expected = Encoding.UTF8.GetBytes(configured);
+    var actual = Encoding.UTF8.GetBytes(httpContext.Request.Headers.Authorization.ToString());
+    if (actual.Length != expected.Length || !CryptographicOperations.FixedTimeEquals(actual, expected))
+        return Results.Unauthorized();
+
+    // Structural validation happens after auth so an unauthenticated caller cannot probe the
+    // parser for shape differences.
+    if (string.IsNullOrWhiteSpace(envelope.Event?.Id) || string.IsNullOrWhiteSpace(envelope.Event.Type))
+        return Results.Json(
+            BuildErrorEnvelope("VALIDATION_FAILED", "event.id and event.type are required.", httpContext),
+            statusCode: StatusCodes.Status400BadRequest);
+
+    if (envelope.Event.Id.Length > 64 || envelope.Event.Type.Length > 48)
+        return Results.Json(
+            BuildErrorEnvelope("VALIDATION_FAILED", "event.id or event.type exceeds the supported length.", httpContext),
+            statusCode: StatusCodes.Status400BadRequest);
+
+    var result = await entitlements.ProcessAsync(envelope, ct);
+
+    // 200 for everything the ledger settled - redeliveries are absorbed by idempotency, so there
+    // is nothing for RevenueCat to retry. A lost concurrency race is the one case where nothing
+    // was committed, so it answers 503 to *ask* for the redelivery.
+    return result == WebhookProcessingResult.Conflict
+        ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable)
+        : Results.Ok();
+})
+.AllowAnonymous();
 
 app.Run();
 
