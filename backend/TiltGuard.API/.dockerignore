@@ -1,0 +1,43 @@
+# Fallback for tooling that builds with *this* directory as the context (an IDE
+# "Run Dockerfile" action, for example). The committed Dockerfile and
+# docker-compose.prod.yml both use `backend/` as the context, so backend/.dockerignore
+# is the one that normally applies.
+#
+# Excluding bin/ and obj/ is load-bearing, not cosmetic: the Dockerfile restores
+# before copying sources and then publishes with --no-restore. Letting the
+# host's obj/ land on top of that restore would overwrite project.assets.json
+# with one built for a different RID and break the publish.
+
+# .NET build output
+**/bin/
+**/obj/
+**/out/
+*.user
+*.suo
+.vs/
+
+# Local-only configuration and secrets — never bake these into an image.
+**/appsettings.Development.json
+**/appsettings.Local.json
+.env
+.env.*
+**/*.pfx
+**/*.key
+**/*.pem
+
+# Source control and CI
+.git/
+.gitignore
+.github/
+.dockerignore
+docker-compose*.yml
+Dockerfile*
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs and sibling workspaces (not part of the backend build)
+**/*.md

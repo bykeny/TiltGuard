@@ -58,6 +58,13 @@ builder.Services.AddHostedService<CooldownWatchdog>();
 
 builder.Services.AddSignalR().AddMessagePackProtocol();
 
+// Liveness only, by design: an empty check set reports Healthy whenever the
+// process can serve a request. Deliberately *not* wired to the database - the
+// container's HEALTHCHECK restarts on failure, so folding a transient Postgres
+// blip into this signal would take down a healthy API. Database readiness is
+// gated by compose's `depends_on: service_healthy` instead.
+builder.Services.AddHealthChecks();
+
 // Must be registered for Context.UserIdentifier to resolve at all - see SubClaimUserIdProvider
 // for why the default NameIdentifier-based provider comes back null in this app (§4.4).
 builder.Services.AddSingleton<IUserIdProvider, SubClaimUserIdProvider>();
@@ -145,6 +152,11 @@ app.UseHttpsRedirection();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Anonymous and unversioned: container orchestrators probe it before any user
+// exists. It sits outside the "/api/v1" group so it never inherits its
+// RequireAuthorization().
+app.MapHealthChecks("/health").AllowAnonymous();
 
 app.MapHub<TiltHub>("/hubs/tilt");
 

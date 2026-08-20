@@ -8,3 +8,9 @@ appsettings.Development.json
 node_modules/
 .expo/
 dist/
+
+# Secrets / local env (templates are committed as *.example)
+.env
+.env.*
+# Templates are committed; only the filled-in files are secret.
+!*.example

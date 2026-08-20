@@ -1,0 +1,82 @@
+# Production stack.
+#
+#   cp .env.prod.example    .env.prod      # then fill in every CHANGE_ME
+#   cp .env.prod.db.example .env.prod.db
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Configuration reaches both services through `env_file`, not through ${...}
+# interpolation. That distinction matters: compose interpolates ${VAR} from the
+# shell or from `.env`, never from an `env_file:` entry, so a stack written the
+# other way silently comes up with empty settings unless every command carries
+# `--env-file .env.prod`. Passing the variables straight into the containers
+# keeps the plain `up` command above correct.
+#
+# SCHEMA: this stack does not run migrations. A brand-new volume starts empty and
+# every query will fail until the schema exists. Apply it once, from a machine
+# with the .NET SDK, before or immediately after the first `up`:
+#
+#   dotnet ef database update --project TiltGuard.API
+#
+# (Point ConnectionStrings__TiltGuard at the published port, or run it from a
+# one-shot SDK container attached to this network.)
+
+name: tiltguard-prod
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    # Postgres credentials only. An env_file applies to the whole service, so
+    # sharing one file with `api` would put Jwt__Secret and the RevenueCat
+    # webhook secret inside the database container — giving anyone who can exec
+    # into Postgres everything needed to forge tokens for any account.
+    env_file:
+      - .env.prod.db
+    volumes:
+      - tiltguard_prod_pgdata:/var/lib/postgresql/data
+    # Reachable only from the compose network — never published to the host.
+    # The API is the sole client, and it resolves this service by name.
+    expose:
+      - "5432"
+    healthcheck:
+      # $$ escapes compose's own interpolation so the shell *inside* the
+      # container expands these from the env_file values.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Generous: the very first boot has to initdb before it can answer.
+      start_period: 30s
+
+  api:
+    build:
+      # Context is this directory, so the Dockerfile can reach the whole
+      # solution rather than just the one project.
+      context: .
+      dockerfile: TiltGuard.API/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      # Pinned here rather than in .env.prod: these are properties of *this*
+      # deployment topology, not operator-tunable secrets.
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Host-side 8080 is expected to sit behind a TLS-terminating reverse
+      # proxy; bind it to the loopback interface instead if the proxy runs on
+      # this same host: "127.0.0.1:8080:8080".
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  tiltguard_prod_pgdata:
+    name: tiltguard_prod_pgdata

@@ -1,0 +1,210 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to main supersedes the first: cancel the older run rather than
+# letting two deployments race each other onto the same host.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        working-directory: backend
+        run: dotnet restore
+
+      # Warnings are failures here. The solution builds clean today, so this is
+      # a ratchet that keeps it that way rather than a bar it has to clear.
+      - name: Build (Release)
+        working-directory: backend
+        run: dotnet build -c Release --no-restore -warnaserror
+
+      - name: Test
+        working-directory: backend
+        run: |
+          # dotnet test errors out when a solution contains no test project, so
+          # look before leaping. Delete this guard once a test project lands.
+          if find . -name '*.Tests.csproj' -o -name '*Tests.csproj' | grep -q .; then
+            dotnet test -c Release --no-build --verbosity normal
+          else
+            echo "::notice::No test projects found; skipping dotnet test."
+          fi
+
+  mobile:
+    name: Mobile · lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install
+        working-directory: mobile
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: mobile
+        run: npx tsc --noEmit
+
+      - name: Lint
+        working-directory: mobile
+        run: npx expo lint
+
+  docker:
+    name: Docker · image build
+    runs-on: ubuntu-latest
+    needs: [backend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build only — no registry push is configured yet. This exists to catch a
+      # broken Dockerfile in the PR that breaks it, not at deploy time.
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/TiltGuard.API/Dockerfile
+          push: false
+          load: true
+          tags: tiltguard-api:${{ github.sha }}
+
+      - name: Smoke-test the image
+        run: |
+          # Starts with no database reachable, so the API will log connection
+          # errors — that is expected. What is being asserted is narrower and
+          # still worth asserting: the image boots, binds 8080, runs as a
+          # non-root user, and answers /health.
+          docker run -d --name tiltguard-smoke -p 8080:8080 \
+            -e ConnectionStrings__TiltGuard='Host=nowhere;Database=x;Username=x;Password=x' \
+            -e Jwt__Secret="$(openssl rand -base64 32)" \
+            -e Jwt__Issuer='https://example.test' \
+            -e Jwt__Audience='tiltguard-mobile' \
+            tiltguard-api:${{ github.sha }}
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              echo "health OK after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::/health never became reachable"
+              docker logs tiltguard-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          runtime_user=$(docker exec tiltguard-smoke id -u)
+          if [ "$runtime_user" = "0" ]; then
+            echo "::error::container is running as root"
+            exit 1
+          fi
+          echo "running as uid ${runtime_user}"
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f tiltguard-smoke || true
+
+  deploy:
+    name: Deploy · production
+    runs-on: ubuntu-latest
+    needs: [backend, mobile, docker]
+    # Never from a pull request: a fork PR must not be able to reach the host.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Bind required reviewers / branch restrictions to this GitHub Environment
+    # so a merge to main cannot deploy unattended.
+    environment: production
+    steps:
+      - name: Check whether deployment is configured
+        id: guard
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPLOY_HOST is not set — skipping deployment (placeholder)."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # PLACEHOLDER. Wired but inert until the repository defines the secrets
+      # below. Raw ssh rather than a marketplace action, deliberately: this step
+      # handles a production deploy key, and that is not a credential to hand to
+      # a third-party action.
+      #
+      # Required secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+      #                   DEPLOY_PATH, DEPLOY_KNOWN_HOSTS
+      - name: Deploy over SSH
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key, not StrictHostKeyChecking=no — accepting any key
+          # would make this step trivially MITM-able.
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "set -euo pipefail && \
+             cd '${DEPLOY_PATH}' && \
+             git fetch --all && git reset --hard origin/main && \
+             cd backend && \
+             docker compose -f docker-compose.prod.yml up -d --build && \
+             docker image prune -f"
+
+      - name: Verify the deployment is healthy
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          # Ask the host itself, so this works whether or not 8080 is exposed
+          # publicly. A deploy that leaves /health failing should fail the run.
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "for i in \$(seq 1 30); do \
+               curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && exit 0; \
+               sleep 2; \
+             done; \
+             echo 'health check never passed'; exit 1"
+
+      - name: Scrub the deploy key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
