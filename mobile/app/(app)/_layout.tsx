@@ -1,27 +1,35 @@
-import { Tabs } from 'expo-router';
+import { Stack } from 'expo-router';
+
+export const unstable_settings = {
+  anchor: '(tabs)',
+};
 
 /**
- * Tabs mapping (§7). Auth protection is handled by the root layout's
- * `Stack.Protected` guard, so this layout only owns presentation.
+ * Authenticated shell (§7).
+ *
+ * A Stack, not the tab navigator itself: a bottom-tab navigator renders its tab
+ * bar over every screen it owns, so hosting `session` there left the mandatory
+ * cooldown with a live tab bar the user could tap to escape the lock. Pushing
+ * the session and paywall flows onto a parent stack covers the tabs outright,
+ * and it is also the only arrangement in which `presentation: 'modal'` means
+ * anything — tab screens have no modal presentation.
  */
-export default function AppTabsLayout() {
+export default function AppLayout() {
   return (
-    <Tabs
+    <Stack
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#020617',
-          borderTopColor: 'rgba(255,255,255,0.06)',
-        },
-        tabBarActiveTintColor: '#34d399',
-        tabBarInactiveTintColor: '#64748b',
-        sceneStyle: { backgroundColor: '#020617' },
+        contentStyle: { backgroundColor: '#020617' },
       }}>
-      <Tabs.Screen name="index" options={{ title: 'Dashboard' }} />
-      <Tabs.Screen name="history" options={{ title: 'History' }} />
-      <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
-      {/* The session flow is pushed full-screen, never surfaced as a tab. */}
-      <Tabs.Screen name="session" options={{ href: null }} />
-    </Tabs>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="session" />
+      <Stack.Screen
+        name="paywall"
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+        }}
+      />
+    </Stack>
   );
 }

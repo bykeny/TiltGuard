@@ -18,12 +18,21 @@ import {
   RISK_PRESENTATION,
   RiskBadge,
 } from '@/components/ui';
+import type { PremiumStatus } from '@/src/api/entitlements';
 import { toErrorMessage } from '@/src/api/errors';
 import { readIdentity } from '@/src/api/jwt';
 import { GAME_CATALOG, gameLabel, type GameType } from '@/src/api/sessions';
 import { tiltHub, useHubStatus } from '@/src/realtime/tiltHub';
 import { useAuthStore } from '@/src/stores/authStore';
+import { useEntitlementStore } from '@/src/stores/entitlementStore';
 import { useSessionStore } from '@/src/stores/sessionStore';
+
+const PREMIUM_STATUS_LABELS: Record<PremiumStatus, string> = {
+  free: 'Free',
+  premium: 'Pro',
+  grace_period: 'Pro · billing issue',
+  expired: 'Expired',
+};
 
 const HUB_STATUS_COPY: Record<string, { label: string; dot: string }> = {
   connected: { label: 'Live', dot: 'bg-emerald-400' },
@@ -46,6 +55,9 @@ export default function DashboardScreen() {
   const isBusy = useSessionStore((state) => state.isBusy);
 
   const hubStatus = useHubStatus((state) => state.status);
+
+  const isPremium = useEntitlementStore((state) => state.isPremium);
+  const premiumStatus = useEntitlementStore((state) => state.premiumStatus);
 
   const [selectedGame, setSelectedGame] = useState<GameType>('cs2');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -95,11 +107,33 @@ export default function DashboardScreen() {
         showsVerticalScrollIndicator={false}>
         <View className="flex-row items-center justify-between">
           <BrandMark />
-          <View className="flex-row items-center gap-2 rounded-full border border-white/5 bg-slate-900/60 px-3 py-1.5">
-            <View className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
-            <Text className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
-              {status.label}
-            </Text>
+
+          <View className="flex-row items-center gap-2">
+            <View className="flex-row items-center gap-2 rounded-full border border-white/5 bg-slate-900/60 px-3 py-1.5">
+              <View className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
+              <Text className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                {status.label}
+              </Text>
+            </View>
+
+            {isPremium ? (
+              <View className="rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1.5">
+                <Text className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                  Pro
+                </Text>
+              </View>
+            ) : (
+              <Pressable
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Upgrade to TiltGuard Pro"
+                onPress={() => router.push('/paywall')}
+                className="rounded-full border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 active:bg-amber-500/25">
+                <Text className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                  Upgrade
+                </Text>
+              </Pressable>
+            )}
           </View>
         </View>
 
@@ -113,9 +147,12 @@ export default function DashboardScreen() {
           </Text>
 
           <View className="mt-4 flex-row items-center justify-between">
+            {/* Server-side status (§6.1), not the JWT's `premium` claim — that
+                claim is a login-time snapshot and would lag a purchase by up to
+                the access token's 15-minute lifetime. */}
             <View className="flex-row items-center gap-2 self-start rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
               <Text className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-                {identity.premiumStatus ?? 'Free'}
+                {PREMIUM_STATUS_LABELS[premiumStatus]}
               </Text>
             </View>
             <Pressable

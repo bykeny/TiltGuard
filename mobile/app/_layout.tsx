@@ -9,6 +9,7 @@ import 'react-native-reanimated';
 
 import { BootSplash } from '@/components/BootSplash';
 import { useColorScheme } from '@/components/useColorScheme';
+import { configurePurchases } from '@/src/purchases/purchases';
 import { tiltHub } from '@/src/realtime/tiltHub';
 import { useAuthStore } from '@/src/stores/authStore';
 import { useSessionStore } from '@/src/stores/sessionStore';
@@ -42,6 +43,9 @@ export default function RootLayout() {
   // Kick off token hydration as early as possible — it runs in parallel with
   // font loading and is idempotent across remounts.
   useEffect(() => {
+    // Must settle before `identifyUser` runs on hydration; both are idempotent
+    // and neither throws, so ordering them here is enough.
+    configurePurchases();
     void initializeAuth();
   }, [initializeAuth]);
 
@@ -70,6 +74,9 @@ function RootLayoutNav() {
     if (!isAuthenticated) {
       useSessionStore.getState().reset();
       void tiltHub.stop();
+      void import('@/src/stores/entitlementStore').then(({ useEntitlementStore }) =>
+        useEntitlementStore.getState().reset()
+      );
     }
   }, [isAuthenticated]);
 

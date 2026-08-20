@@ -10,8 +10,19 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  *
  * Override the API host per machine without editing tracked files:
  *   EXPO_PUBLIC_API_URL=http://192.168.1.42:5191 npx expo start
+ *
+ * Purchases need a dev build plus:
+ *   EXPO_PUBLIC_RC_IOS_KEY=appl_... EXPO_PUBLIC_RC_ANDROID_KEY=goog_...
  */
 const apiUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+
+// RevenueCat *public* SDK keys (§6.1). These are publishable by design — the
+// secret half never leaves RevenueCat, and the backend is gated by its own
+// webhook secret (§6.2). Absent here, the client falls back to mock mode.
+const revenueCat = {
+  iosApiKey: process.env.EXPO_PUBLIC_RC_IOS_KEY?.trim() ?? '',
+  androidApiKey: process.env.EXPO_PUBLIC_RC_ANDROID_KEY?.trim() ?? '',
+};
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -22,5 +33,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Omitted rather than nulled when unset — the config serializer turns a
     // null into `{}`, which would defeat a naive truthiness check downstream.
     ...(apiUrl ? { apiUrl } : {}),
+    revenueCat,
   },
 });
