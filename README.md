@@ -31,18 +31,18 @@ The backend is built as a single deployable .NET 10 Minimal API with zero-alloca
 ┌────────────────────────────────────────────────────────────────────────────────────┐
 │                           MOBILE CLIENT (Expo React Native)                        │
 │                                                                                    │
-│  Expo Router v4 (file-based routing)  ·  Zustand 5 (state management)             │
-│  @microsoft/signalr 10 (WebSocket)    ·  NativeWind 4 (Tailwind CSS)              │
-│  expo-secure-store (token storage)    ·  react-native-purchases (RevenueCat SDK)  │
+│  Expo Router v4 (file-based routing)  ·  Zustand 5 (state management)              │
+│  @microsoft/signalr 10 (WebSocket)    ·  NativeWind 4 (Tailwind CSS)               │
+│  expo-secure-store (token storage)    ·  react-native-purchases (RevenueCat SDK)   │
 │                                                                                    │
 │  Route Groups:  (auth)/ login | register                                           │
-│                 (app)/  dashboard | history | settings | session/active | cooldown  │
+│                 (app)/  dashboard | history | settings | session/active | cooldown │
 │                         paywall                                                    │
 └────────────────┬──────────────────────────────────────┬────────────────────────────┘
                  │ HTTPS (REST, JSON)                   │ WSS (SignalR, MessagePack)
                  │ Authorization: Bearer <JWT>          │ access_token query param
                  ▼                                      ▼
-┌────────────────────────────────┐   ┌──────────────────────────────────────────────┐
+┌────────────────────────────────┐   ┌───────────────────────────────────────────────┐
 │  .NET 10 Minimal API Gateway   │   │  SignalR Hub Layer                            │
 │                                │   │  Endpoint: /hubs/tilt                         │
 │  Route Groups:                 │   │  TiltHub : Hub<ITiltClient>                   │
@@ -58,10 +58,10 @@ The backend is built as a single deployable .NET 10 Minimal API with zero-alloca
 │  → Route Handlers              │   │    CooldownLockEngaged / Released             │
 │                                │   │    ReceiveSessionState                        │
 │  Health: /health (anonymous)   │   │    ReceiveTelemetryAck                        │
-└──────────┬───────────┬─────────┘   └───────┬──────────────────────┬───────────────┘
+└──────────┬───────────┬─────────┘   └───────┬──────────────────────┬────────────────┘
            │           │                     │                      │
            │           ▼                     ▼                      │
-           │   ┌─────────────────────────────────────────────┐      │
+           │   ┌──────────────────────────────────────────────┐     │
            │   │  Application Services (DI, Scoped)           │◄────┘
            │   │                                              │
            │   │  AuthService ·············· JWT issuance, BCrypt verify,
@@ -215,7 +215,7 @@ The `INCLUDE` clause covers every column the tilt engine reads, so PostgreSQL sa
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/TiltGuard.git
+git clone https://github.com/bykeny/TiltGuard.git
 cd TiltGuard
 ```
 
