@@ -226,7 +226,7 @@ cd backend
 docker compose up -d
 ```
 
-This starts a PostgreSQL 16 container on `localhost:5432` with the credentials configured in `docker-compose.yml` (`postgres`/`postgres`, database `tiltguard_dev`).
+This starts a PostgreSQL 16 container on `localhost:5433` (host port 5433 avoids clashing with a native Postgres on 5432) with the credentials configured in `docker-compose.yml` (`postgres`/`postgres`, database `tiltguard_dev`).
 
 ### 3. Apply Database Migrations
 
@@ -279,7 +279,7 @@ EXPO_PUBLIC_API_URL=http://192.168.x.x:5191 npx expo start
 {
   "ConnectionStrings": {
     // Matches the Docker Compose dev service credentials
-    "TiltGuard": "Host=localhost;Port=5432;Database=tiltguard_dev;Username=postgres;Password=postgres"
+    "TiltGuard": "Host=localhost;Port=5433;Database=tiltguard_dev;Username=postgres;Password=postgres"
   },
 
   "Jwt": {
@@ -423,7 +423,7 @@ TiltGuard/
 ├── .github/workflows/
 │   └── ci-cd.yml                      # GitHub Actions: build, lint, Docker smoke, deploy
 ├── backend/
-│   ├── docker-compose.yml             # Dev: PostgreSQL 16 on localhost:5432
+│   ├── docker-compose.yml             # Dev: PostgreSQL 16 on localhost:5433
 │   ├── docker-compose.prod.yml        # Prod: API + DB, health checks, non-root
 │   ├── .env.prod.example              # Production env template (API secrets)
 │   ├── .env.prod.db.example           # Production env template (DB credentials)

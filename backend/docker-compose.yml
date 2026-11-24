@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tiltguard_dev
     ports:
-      - "5432:5432"
+      # Host port 5433, not 5432: a native Postgres on the dev machine commonly
+      # owns 5432 and would silently receive connections meant for this one.
+      - "5433:5432"
     volumes:
       - tiltguard-db-data:/var/lib/postgresql/data
 

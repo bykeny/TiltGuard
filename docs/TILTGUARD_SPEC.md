@@ -990,8 +990,8 @@ app/
 src/
 ├── api/client.ts            # fetch wrapper: bearer injection + 401→refresh→retry queue
 ├── realtime/tiltHub.ts      # @microsoft/signalr HubConnection singleton, typed events
-├── stores/session.store.ts  # Zustand: mirrors server session state machine
-├── stores/auth.store.ts     # token pair in expo-secure-store, hydration on boot
+├── stores/sessionStore.ts   # Zustand: mirrors server session state machine
+├── stores/authStore.ts      # token pair in expo-secure-store, hydration on boot
 └── components/…             # NativeWind-styled primitives
 ```
 
