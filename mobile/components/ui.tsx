@@ -12,6 +12,7 @@ import {
   Text,
   TextInput,
   View,
+  type TextInputInstance,
   type TextInputProps,
 } from 'react-native';
 
@@ -64,7 +65,7 @@ type TextFieldProps = TextInputProps & {
 };
 
 /** A dark input whose border lights up emerald while focused. */
-export const TextField = forwardRef<TextInput, TextFieldProps>(function TextField(
+export const TextField = forwardRef<TextInputInstance, TextFieldProps>(function TextField(
   { isFocused = false, className, ...props },
   ref
 ) {

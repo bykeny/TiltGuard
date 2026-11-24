@@ -14,7 +14,7 @@ import {
   Pressable,
   ScrollView,
   Text,
-  TextInput,
+  type TextInputInstance,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -54,7 +54,7 @@ export default function RegisterScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const passwordRef = useRef<TextInput>(null);
+  const passwordRef = useRef<TextInputInstance>(null);
 
   const rules = useMemo(() => passwordRules(password), [password]);
   const passwordValid = rules.every((rule) => rule.met);
